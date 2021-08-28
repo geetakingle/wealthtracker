@@ -85,7 +85,7 @@ class Cashflows:
 
 
 class Transactions:
-    def __init__(self):
+    def __init__(self, location = ""):
         self.expense_types = None
         self.expense_specifics = None
         self.cat_path = "categories.cfg"
@@ -97,10 +97,12 @@ class Transactions:
 
         psql_config = configparser.ConfigParser()
         psql_config.read("psql_config.ini")
-        self.conn = psql.connect(host=psql_config['postgresql']['host'],
-                                 database=psql_config['postgresql']['database'],
-                                 user=psql_config['postgresql']['user'],
-                                 password=psql_config['postgresql']['password'])
+        conn_location = ''.join(['postgresql', location])
+        self.conn = psql.connect(host=psql_config[conn_location]['host'],
+                                 port=psql_config[conn_location]['port'],
+                                 database=psql_config[conn_location]['database'],
+                                 user=psql_config[conn_location]['user'],
+                                 password=psql_config[conn_location]['password'])
 
     def refresh_categories(self):
         cat_cfg = configparser.ConfigParser()
@@ -167,6 +169,16 @@ class Transactions:
                         self.execute_command(command)
                 # Delete transaction file as its no longer needed
                 os.remove(file_path)
+
+                # Update last_updated date in table accounts
+                command = f"""SELECT transaction_date from transactions WHERE account_id = '{account_id}'
+                                ORDER BY transaction_date desc limit 1"""
+                last_date, = self.execute_command(command).pop()
+                command = f"""UPDATE accounts 
+                                SET last_updated = '{last_date}'::date 
+                                WHERE account_id = '{account_id}' 
+                                RETURNING *"""
+                self.execute_command(command)
 
         except Exception as e:
             print(e)
