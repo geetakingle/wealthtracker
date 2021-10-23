@@ -6,6 +6,8 @@ import configparser
 import os
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
+import numpy as np
+import socket
 
 
 def chart_cashflows(cfs):
@@ -14,17 +16,21 @@ def chart_cashflows(cfs):
 
 
 class Cashflows:
-    def __init__(self):
+    def __init__(self, location=""):
         self.accounts_cols = ['account_id', 'account_type', 'bank', 'status', 'joint']
         self.transactions_cols = ['id', 'account_id', 'transaction_date', 'category', 'description', 'amount']
         self.expense_types_cols = ['id', 'category', 'target']
 
         psql_config = configparser.ConfigParser()
         psql_config.read("psql_config.ini")
-        self.conn = psql.connect(host=psql_config['postgresql']['host'],
-                                 database=psql_config['postgresql']['database'],
-                                 user=psql_config['postgresql']['user'],
-                                 password=psql_config['postgresql']['password'])
+        if '192.168.1.75' not in socket.gethostbyname(socket.gethostname()):
+            location = 'outside'
+        conn_location = ''.join(['postgresql', location])
+        self.conn = psql.connect(host=psql_config[conn_location]['host'],
+                                 port=psql_config[conn_location]['port'],
+                                 database=psql_config[conn_location]['database'],
+                                 user=psql_config[conn_location]['user'],
+                                 password=psql_config[conn_location]['password'])
 
     def execute_command(self, command):
         with self.conn:
@@ -34,18 +40,18 @@ class Cashflows:
 
     def get_table_range(self, table, date_cat, fro, to, order_by='transaction_date'):
         command = f"""SELECT * from {table} 
-                        WHERE {date_cat} > '{fro}'::date AND {date_cat} < '{to}'::date 
+                        WHERE {date_cat} BETWEEN '{fro}'::date AND '{to}'::date 
                         ORDER BY {order_by} ASC"""
         return self.execute_command(command)
 
     def get_cashflows(self, fro=None, to=None):
         # Convert fro and to to datetime
-        fro = datetime.strptime('2020-01-01', '%Y-%m-%d') if fro is None else datetime.strptime(fro, '%Y-%m-%d')
-        to = datetime.now().date() if to is None else datetime.strptime(to, '%Y-%m-%d')
+        fro = pd.Timestamp('2021-04-01', tz='America/Edmonton') if fro is None else pd.Timestamp(fro, tz='America/Edmonton')
+        to = pd.Timestamp(datetime.now().date(), tz='America/Edmonton') if to is None else pd.Timestamp(to, tz='America/Edmonton')
 
         # We need to put the start and end dates to first and last of each respective month,
         # not where indicated by fro and to. Manipulate the dates to get those dates
-        monthly = pd.date_range(start=fro, end=to, freq='M')
+        monthly = pd.date_range(start=fro, end=to, freq='M', tz='America/Edmonton')
         dates_start = []
         dates_end = []
         # Append the first day of the month of 'fro', in case 'fro' was entered in the middle
@@ -54,28 +60,36 @@ class Cashflows:
             dates_end.append(date)
             dates_start.append(date + timedelta(days=1))
         # Append the last day of the month of 'to',  not 'to' itself. This will prevent incomplete cashflow calculations
-        dates_end.append(pd.date_range(start=to, end=to + timedelta(days=(32 - to.day)), freq='M')[0])
+        dates_end.append(pd.date_range(start=to, end=to + timedelta(days=(32 - to.day)),
+                                       freq='M', tz='America/Edmonton')[0])
 
         # Retrieve transaction data based on calculated dates and input to DataFrame
         df = pd.DataFrame(self.get_table_range('transactions', 'transaction_date', dates_start[0], dates_end[-1]),
                           columns=self.transactions_cols)
-        df.drop('id', 1, inplace=True)  # Drop id, it's useless
-        df['transaction_date'] = pd.to_datetime(df['transaction_date'])  # Covert dates to datetime type
-        df.set_index('transaction_date')  # Set dates to index
+        df.drop(columns='id', inplace=True)  # Drop id, it's useless
+        # Covert dates to datetime type with local tz
+        df['transaction_date'] = pd.to_datetime(df['transaction_date']).dt.tz_localize('America/Edmonton')
 
-        # Generate masks and get cashflows
-        cashflows = {}
-        for start, end in zip(dates_start, dates_end):
-            # We want to mask by dates, and filter out expense_types: credit_payments, admin, ignore
-            mask = (df['transaction_date'] >= start) & (df['transaction_date'] <= end) & \
-                   (df['category'] != 'admin') & \
-                   (df['category'] != 'credit_payments') & \
-                   (df['category'] != 'ignore')
+        # # Self Generated Histogram
+        # cashflows = {}
+        # for start, end in zip(dates_start, dates_end):
+        #     # We want to mask by dates, and filter out expense_types: credit_payments, admin, ignore
+        #     mask = (df['transaction_date'] >= start) & (df['transaction_date'] <= end) & \
+        #            (df['category'] != 'admin') & \
+        #            (df['category'] != 'credit_payments') & \
+        #            (df['category'] != 'ignore')
+        #
+        #     # Create dict entry by Month Year and net cashflow
+        #     cashflows[start.strftime('%B %Y')] = df[mask]
 
-            # Create dict entry by Month Year and net cashflow
-            cashflows[start.strftime('%B %Y')] = df[mask]
+        # Generate Histogram
+        hist_bin = dates_start + [dates_end[-1]]  # Generate bins for histogram
 
-        return cashflows
+        # Generate Masks and get raw data in one dataframe
+        mask = (df['category'] != 'admin') & \
+               (df['category'] != 'credit_payments') & \
+               (df['category'] != 'ignore')
+        return df[mask], hist_bin
 
     def __enter__(self):
         return self
@@ -97,6 +111,8 @@ class Transactions:
 
         psql_config = configparser.ConfigParser()
         psql_config.read("psql_config.ini")
+        if '192.168.1.75' not in socket.gethostbyname(socket.gethostname()):
+            location = 'outside'
         conn_location = ''.join(['postgresql', location])
         self.conn = psql.connect(host=psql_config[conn_location]['host'],
                                  port=psql_config[conn_location]['port'],
@@ -140,8 +156,12 @@ class Transactions:
 
     def insert_transactions(self):
         """ Insert Transactions into Database using CSV in transaction_records folder
+            Name of CSV shall be:
+                'AccountNumber'.csv
             Structure of CSV shall be:
-            Date | Description | Debit Amount | Credit Amount"""
+                Date | Description | Debit Amount | Credit Amount
+                No header line in CSV
+        """
 
         try:
             all_files = os.listdir("transaction_records")
