@@ -4,6 +4,7 @@ from bokeh.models import ColumnDataSource, HoverTool
 from bokeh.models import DatetimeTickFormatter, NumeralTickFormatter
 from bokeh.transform import linear_cmap
 from bokeh.palettes import brewer
+import requests
 import numpy as np
 import pandas as pd
 from datetime import datetime
@@ -22,7 +23,7 @@ def style(p):
 
 
 # Get DataFrame of data
-raw_data, hist_bin = Cashflows().get_cashflows()
+raw_data, hist_bin = Cashflows(configfile='psql_familyfinances.ini').get_cashflows()
 
 # Generate histogram of cashflows
 date_epochs = raw_data['transaction_date'].values.astype(np.int64) // 10 ** 9

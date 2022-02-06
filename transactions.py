@@ -3,11 +3,11 @@
 import psycopg2 as psql
 import pandas as pd
 import configparser
+import requests
 import os
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 import numpy as np
-import socket
 
 
 def chart_cashflows(cfs):
@@ -16,15 +16,16 @@ def chart_cashflows(cfs):
 
 
 class Cashflows:
-    def __init__(self, location=""):
+    def __init__(self, configfile):
         self.accounts_cols = ['account_id', 'account_type', 'bank', 'status', 'joint']
         self.transactions_cols = ['id', 'account_id', 'transaction_date', 'category', 'description', 'amount']
         self.expense_types_cols = ['id', 'category', 'target']
 
         psql_config = configparser.ConfigParser()
-        psql_config.read("psql_config.ini")
-        if '192.168.1.75' not in socket.gethostbyname(socket.gethostname()):
-            location = 'outside'
+        psql_config.read(configfile)
+        local_ip = psql_config['myip']['localip']
+        current_ip = requests.get('https://api.ipify.org/').text
+        location = 'outside' if local_ip != current_ip else ''
         conn_location = ''.join(['postgresql', location])
         self.conn = psql.connect(host=psql_config[conn_location]['host'],
                                  port=psql_config[conn_location]['port'],
@@ -38,20 +39,21 @@ class Cashflows:
                 curs.execute(command)
                 return curs.fetchall()
 
-    def get_table_range(self, table, date_cat, fro, to, order_by='transaction_date'):
+    def get_table_range(self, table, date_cat, fro, to):
         command = f"""SELECT * from {table} 
                         WHERE {date_cat} BETWEEN '{fro}'::date AND '{to}'::date 
-                        ORDER BY {order_by} ASC"""
+                        ORDER BY {date_cat}"""
         return self.execute_command(command)
 
     def get_cashflows(self, fro=None, to=None):
+        tz = 'America/Edmonton'
         # Convert fro and to to datetime
-        fro = pd.Timestamp('2021-04-01', tz='America/Edmonton') if fro is None else pd.Timestamp(fro, tz='America/Edmonton')
-        to = pd.Timestamp(datetime.now().date(), tz='America/Edmonton') if to is None else pd.Timestamp(to, tz='America/Edmonton')
+        fro = pd.Timestamp('2021-04-01', tz=tz) if fro is None else pd.Timestamp(fro, tz=tz)
+        to = pd.Timestamp(datetime.now().date(), tz=tz) if to is None else pd.Timestamp(to, tz=tz)
 
         # We need to put the start and end dates to first and last of each respective month,
         # not where indicated by fro and to. Manipulate the dates to get those dates
-        monthly = pd.date_range(start=fro, end=to, freq='M', tz='America/Edmonton')
+        monthly = pd.date_range(start=fro, end=to, freq='M', tz=tz)
         dates_start = []
         dates_end = []
         # Append the first day of the month of 'fro', in case 'fro' was entered in the middle
@@ -61,14 +63,14 @@ class Cashflows:
             dates_start.append(date + timedelta(days=1))
         # Append the last day of the month of 'to',  not 'to' itself. This will prevent incomplete cashflow calculations
         dates_end.append(pd.date_range(start=to, end=to + timedelta(days=(32 - to.day)),
-                                       freq='M', tz='America/Edmonton')[0])
+                                       freq='M', tz=tz)[0])
 
         # Retrieve transaction data based on calculated dates and input to DataFrame
         df = pd.DataFrame(self.get_table_range('transactions', 'transaction_date', dates_start[0], dates_end[-1]),
                           columns=self.transactions_cols)
         df.drop(columns='id', inplace=True)  # Drop id, it's useless
         # Covert dates to datetime type with local tz
-        df['transaction_date'] = pd.to_datetime(df['transaction_date']).dt.tz_localize('America/Edmonton')
+        df['transaction_date'] = pd.to_datetime(df['transaction_date']).dt.tz_localize(tz)
 
         # # Self Generated Histogram
         # cashflows = {}
@@ -99,7 +101,7 @@ class Cashflows:
 
 
 class Transactions:
-    def __init__(self, location = ""):
+    def __init__(self, configfile):
         self.expense_types = None
         self.expense_specifics = None
         self.cat_path = "categories.cfg"
@@ -110,9 +112,10 @@ class Transactions:
         self.expense_types_cols = ['id', 'category', 'target']
 
         psql_config = configparser.ConfigParser()
-        psql_config.read("psql_config.ini")
-        if '192.168.1.75' not in socket.gethostbyname(socket.gethostname()):
-            location = 'outside'
+        psql_config.read(configfile)
+        local_ip = psql_config['myip']['localip']
+        current_ip = requests.get('https://api.ipify.org/').text
+        location = 'outside' if local_ip != current_ip else ''
         conn_location = ''.join(['postgresql', location])
         self.conn = psql.connect(host=psql_config[conn_location]['host'],
                                  port=psql_config[conn_location]['port'],
